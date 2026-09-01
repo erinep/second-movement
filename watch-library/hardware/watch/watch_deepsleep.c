@@ -127,6 +127,7 @@ uint32_t watch_get_backup_data(uint8_t reg) {
 
 static void _watch_disable_all_pins_except_rtc(void) {
     uint32_t config = RTC->MODE0.TAMPCTRL.reg;
+    uint32_t porta_pins_to_disable = 0xFFFFFFFF;
     uint32_t portb_pins_to_disable = 0xFFFFFFFF;
 
     /// FIXME: Watch library shouldn't be responsible for this, but Movement uses PB00 and PB03 for activity and orientation tracking.
@@ -137,12 +138,18 @@ static void _watch_disable_all_pins_except_rtc(void) {
     // same with RTC/IN[1] and PB02
     if (config & RTC_TAMPCTRL_IN1ACT_Msk) portb_pins_to_disable &= 0xFFFFFFFB;
 
-    // port A: that last B is to always keep PA02 configured as-is; that's our ALARM button.
-    PORT->Group[0].DIRCLR.reg = 0xFFFFFFFB;
+    // Always keep PA02 configured as-is; that's our ALARM button.
+    porta_pins_to_disable &= ~(1 << 2);
+    // Also preserve an asynchronously configured Light button.
+    if (EIC->ASYNCH.reg) {
+        porta_pins_to_disable &= ~(1 << (HAL_GPIO_BTN_LIGHT_pin() & 0x1F));
+    }
+
+    PORT->Group[0].DIRCLR.reg = porta_pins_to_disable;
     // WRCONFIG can only set half the pins at a time, so we need two writes. This sets pins 0-15.
-	PORT->Group[0].WRCONFIG.reg = PORT_WRCONFIG_WRPINCFG | 0xFFFB;
+	PORT->Group[0].WRCONFIG.reg = PORT_WRCONFIG_WRPINCFG | (porta_pins_to_disable & 0xFFFF);
     // ...and adding the HWSEL flag configures 16-31.
-	PORT->Group[0].WRCONFIG.reg = PORT_WRCONFIG_HWSEL | PORT_WRCONFIG_WRPINCFG | 0xffff;
+	PORT->Group[0].WRCONFIG.reg = PORT_WRCONFIG_HWSEL | PORT_WRCONFIG_WRPINCFG | (porta_pins_to_disable >> 16);
 
     // port B: disable all pins we didn't save above.
     PORT->Group[1].DIRCLR.reg = portb_pins_to_disable;
@@ -154,7 +161,9 @@ static void _watch_disable_all_peripherals_except_slcd(void) {
     watch_disable_leds();
     watch_disable_buzzer();
     watch_disable_adc();
-    watch_disable_external_interrupts();
+    // Keep the EIC enabled only when a clockless asynchronous wake source was
+    // deliberately configured for Sleep Mode.
+    if (!EIC->ASYNCH.reg) watch_disable_external_interrupts();
 
     /// TODO: Actually disable all these peripherals? Disabling I2C seems to have no impact fwiw.
     // watch_disable_i2c();

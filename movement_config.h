@@ -27,29 +27,59 @@
 
 #include "movement_faces.h"
 
-const watch_face_t watch_faces[] = {
+const watch_face_t movement_clock_faces[] = {
     clock_face,
-    world_clock_face,
-    sunrise_sunset_face,
-    moon_phase_face,
-    fast_stopwatch_face,
-    countdown_face,
-    alarm_face,
-    temperature_display_face,
-    voltage_face,
-    settings_face,
-    set_time_face,
+    my_sunrise_face,
+    title_face, // transient; excluded from short-Mode rotation
 };
 
-#define MOVEMENT_NUM_FACES (sizeof(watch_faces) / sizeof(watch_face_t))
+const watch_face_t movement_alarm_faces[] = {
+    my_countdown_face,
+    my_stopwatch_face,
+    time_since_motion_face,
+    tomato_face,
+    alarm_face,
+    title_face, // transient; excluded from short-Mode rotation
+};
 
-/* Determines what face to go to from the first face on long press of the Mode button.
- * Also excludes these faces from the normal rotation.
- * In the default firmware, this lets you access temperature and battery voltage with a long press of Mode.
- * Some folks also like to use this to hide the preferences and time set faces from the normal rotation.
- * If you don't want any faces to be excluded, set this to 0 and a long Mode press will have no effect.
+const watch_face_t movement_settings_faces[] = {
+    set_timezone_face,
+    set_date_face,
+    set_time_face,
+    set_location_face,
+    settings_face,
+    voltage_face,
+    memory_launcher_face,
+    title_face, // transient; excluded from short-Mode rotation
+};
+
+/* Nested under Config; these faces are excluded from top-level rotation. */
+const watch_face_t movement_memory_faces[] = {
+    my_databank_face,
+    title_face,
+};
+
+#define MOVEMENT_CLOCK_FACE_COUNT (sizeof(movement_clock_faces) / sizeof(watch_face_t))
+#define MOVEMENT_ALARM_FACE_COUNT (sizeof(movement_alarm_faces) / sizeof(watch_face_t))
+#define MOVEMENT_SETTINGS_FACE_COUNT (sizeof(movement_settings_faces) / sizeof(watch_face_t))
+#define MOVEMENT_MEMORY_FACE_COUNT (sizeof(movement_memory_faces) / sizeof(watch_face_t))
+
+#define MOVEMENT_ALARM_FACE_INDEX MOVEMENT_CLOCK_FACE_COUNT
+#define MOVEMENT_SETTINGS_FACE_INDEX (MOVEMENT_ALARM_FACE_INDEX + MOVEMENT_ALARM_FACE_COUNT)
+#define MOVEMENT_MEMORY_FACE_INDEX (MOVEMENT_SETTINGS_FACE_INDEX + MOVEMENT_SETTINGS_FACE_COUNT)
+#define MOVEMENT_NUM_FACES (MOVEMENT_CLOCK_FACE_COUNT + MOVEMENT_ALARM_FACE_COUNT + MOVEMENT_MEMORY_FACE_COUNT + MOVEMENT_SETTINGS_FACE_COUNT)
+
+#define MOVEMENT_CLOCK_TITLE_FACE_INDEX (MOVEMENT_ALARM_FACE_INDEX - 1)
+#define MOVEMENT_ALARM_TITLE_FACE_INDEX (MOVEMENT_SETTINGS_FACE_INDEX - 1)
+#define MOVEMENT_SETTINGS_TITLE_FACE_INDEX (MOVEMENT_MEMORY_FACE_INDEX - 1)
+#define MOVEMENT_MEMORY_LAUNCHER_FACE_INDEX (MOVEMENT_SETTINGS_TITLE_FACE_INDEX - 1)
+#define MOVEMENT_MEMORY_TITLE_FACE_INDEX (MOVEMENT_NUM_FACES - 1)
+
+/* These indexes divide the face list into three top-level menus. Short presses of Mode
+ * cycle within the current menu; long presses advance to the first face of the
+ * next menu: clock/info -> tools -> settings -> clock/info. Memory is a nested
+ * menu opened from memory_launcher_face in Settings.
  */
-#define MOVEMENT_SECONDARY_FACE_INDEX (MOVEMENT_NUM_FACES - 5)
 
 /* Custom hourly chime tune. Check movement_custom_signal_tunes.h for options. */
 #define SIGNAL_TUNE_DEFAULT
@@ -93,6 +123,15 @@ const watch_face_t watch_faces[] = {
  */
 #define MOVEMENT_DEFAULT_LOW_ENERGY_INTERVAL 2
 
+/* Enable short development-only timeouts. Keep this disabled for daily use.
+ * Debug overrides do not change saved Settings values or on-screen labels.
+ */
+#define MOVEMENT_DEBUG_MODE 0
+
+#if MOVEMENT_DEBUG_MODE
+#define MOVEMENT_LOW_ENERGY_TEST_TIMEOUT_SECONDS 60
+#endif
+
 /* Set the led duration
  * Valid values are:
  * 0: No LED
@@ -101,6 +140,12 @@ const watch_face_t watch_faces[] = {
  * 3: 5 seconds
  */
 #define MOVEMENT_DEFAULT_LED_DURATION 1
+
+/* Menu title duration in half-second units: 1=.5s, 2=1s, 3=1.5s, 4=2s. */
+#define MOVEMENT_DEFAULT_TITLE_LENGTH 1
+
+/* LIS2DW motion threshold, in 0.03125 g steps (32 = 1.0 g). */
+#define MOVEMENT_DEFAULT_MOTION_THRESHOLD 32
 
 /* Optionally debounce button presses (disable by default).
  * A value of 4 is a good starting point if you have issues

@@ -57,6 +57,12 @@
  *      stock firmware, but if you choose a custom firmware with faces that
  *      you’d like to keep on screen for longer, you can set that here.
  *
+ *  TT / TITLE - Menu title duration.
+ *      Sets transient menu titles to 0.5, 1, 1.5 or 2 seconds.
+ *
+ *  TH / THRSH - Accelerometer motion threshold.
+ *      Selects a persisted motion threshold from 0.125 to 1.5 g.
+ *
  *  LE / LoEne - Low Energy mode.
  *      Sets the time until the watch enters its low energy sleep mode.
  *      Options range from 1 hour to 7 days, or Never. The more often Sensor

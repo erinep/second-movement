@@ -50,6 +50,19 @@
 
 #include "movement_custom_signal_tunes.h"
 
+static const watch_face_t *_movement_get_watch_face(uint8_t index) {
+    if (index < MOVEMENT_ALARM_FACE_INDEX) {
+        return &movement_clock_faces[index];
+    }
+    if (index < MOVEMENT_SETTINGS_FACE_INDEX) {
+        return &movement_alarm_faces[index - MOVEMENT_ALARM_FACE_INDEX];
+    }
+    if (index < MOVEMENT_MEMORY_FACE_INDEX) {
+        return &movement_settings_faces[index - MOVEMENT_SETTINGS_FACE_INDEX];
+    }
+    return &movement_memory_faces[index - MOVEMENT_MEMORY_FACE_INDEX];
+}
+
 #if __EMSCRIPTEN__
 #include <emscripten.h>
 void _wake_up_simulator(void);
@@ -58,6 +71,7 @@ void _wake_up_simulator(void);
 #endif
 
 volatile movement_state_t movement_state;
+static uint8_t movement_title_length = MOVEMENT_DEFAULT_TITLE_LENGTH;
 void * watch_face_contexts[MOVEMENT_NUM_FACES];
 watch_date_time_t scheduled_tasks[MOVEMENT_NUM_FACES];
 const int32_t movement_le_inactivity_deadlines[8] = {INT_MAX, 600, 3600, 7200, 21600, 43200, 86400, 604800};
@@ -89,6 +103,7 @@ typedef struct {
     volatile bool enter_sleep_mode;
     volatile bool exit_sleep_mode;
     volatile bool is_sleeping;
+    volatile bool illuminate_after_sleep_wake;
     volatile uint8_t subsecond;
     volatile rtc_counter_t minute_counter;
     volatile bool minute_alarm_fired;
@@ -132,6 +147,7 @@ void cb_mode_btn_interrupt(void);
 void cb_light_btn_interrupt(void);
 void cb_alarm_btn_interrupt(void);
 void cb_alarm_btn_extwake(void);
+void cb_light_btn_sleep_wake(void);
 void cb_minute_alarm_fired(void);
 void cb_tick(void);
 void cb_mode_btn_timeout_interrupt(void);
@@ -257,15 +273,25 @@ static inline void _movement_reset_inactivity_countdown(void) {
 
     movement_volatile_state.enter_sleep_mode = false;
 
+#ifdef MOVEMENT_LOW_ENERGY_TEST_TIMEOUT_SECONDS
+    uint32_t low_energy_timeout = MOVEMENT_LOW_ENERGY_TEST_TIMEOUT_SECONDS;
+    watch_rtc_register_comp_callback_no_schedule(
+        cb_sleep_timeout_interrupt,
+        counter + low_energy_timeout * freq,
+        SLEEP_TIMEOUT
+    );
+#else
     if (movement_state.settings.bit.le_interval == 0) {
         watch_rtc_disable_comp_callback_no_schedule(SLEEP_TIMEOUT);
     } else {
+        uint32_t low_energy_timeout = movement_le_inactivity_deadlines[movement_state.settings.bit.le_interval];
         watch_rtc_register_comp_callback_no_schedule(
             cb_sleep_timeout_interrupt,
-            counter + movement_le_inactivity_deadlines[movement_state.settings.bit.le_interval] * freq,
+            counter + low_energy_timeout * freq,
             SLEEP_TIMEOUT
         );
     }
+#endif
 
     movement_volatile_state.schedule_next_comp = true;
 }
@@ -378,16 +404,17 @@ static void _movement_handle_top_of_minute(void) {
     }
 
     for(uint8_t i = 0; i < MOVEMENT_NUM_FACES; i++) {
+        const watch_face_t *face = _movement_get_watch_face(i);
         // For each face that offers an advisory...
-        if (watch_faces[i].advise != NULL) {
+        if (face->advise != NULL) {
             // ...we ask for one.
-            movement_watch_face_advisory_t advisory = watch_faces[i].advise(watch_face_contexts[i]);
+            movement_watch_face_advisory_t advisory = face->advise(watch_face_contexts[i]);
 
             // If it wants a background task...
             if (advisory.wants_background_task) {
                 // we give it one. pretty straightforward!
                 movement_event_t background_event = { EVENT_BACKGROUND_TASK, 0 };
-                watch_faces[i].loop(background_event, watch_face_contexts[i]);
+                face->loop(background_event, watch_face_contexts[i]);
             }
 
             // TODO: handle other advisory types
@@ -404,7 +431,7 @@ static void _movement_handle_scheduled_tasks(void) {
             if (scheduled_tasks[i].reg <= date_time.reg) {
                 scheduled_tasks[i].reg = 0;
                 movement_event_t background_event = { EVENT_BACKGROUND_TASK, 0 };
-                watch_faces[i].loop(background_event, watch_face_contexts[i]);
+                _movement_get_watch_face(i)->loop(background_event, watch_face_contexts[i]);
                 // check if loop scheduled a new task
                 if (scheduled_tasks[i].reg) {
                     num_active_tasks++;
@@ -496,10 +523,15 @@ bool movement_default_loop_handler(movement_event_t event) {
             }
             break;
         case EVENT_MODE_LONG_PRESS:
-            if (MOVEMENT_SECONDARY_FACE_INDEX && movement_state.current_face_idx == 0) {
-                movement_move_to_face(MOVEMENT_SECONDARY_FACE_INDEX);
+            if (movement_state.current_face_idx < (int16_t)MOVEMENT_ALARM_FACE_INDEX) {
+                title_face_set_transition("TOOLS", "TL", MOVEMENT_ALARM_FACE_INDEX);
+                movement_move_to_face(MOVEMENT_ALARM_TITLE_FACE_INDEX);
+            } else if (movement_state.current_face_idx < (int16_t)MOVEMENT_SETTINGS_FACE_INDEX) {
+                title_face_set_transition("CNFG ", "CF", MOVEMENT_SETTINGS_FACE_INDEX);
+                movement_move_to_face(MOVEMENT_SETTINGS_TITLE_FACE_INDEX);
             } else {
-                movement_move_to_face(0);
+                title_face_set_transition("CLOCK", "CL", 0);
+                movement_move_to_face(MOVEMENT_CLOCK_TITLE_FACE_INDEX);
             }
             break;
         default:
@@ -514,14 +546,35 @@ void movement_move_to_face(uint8_t watch_face_index) {
     movement_state.next_face_idx = watch_face_index;
 }
 
+void movement_open_memory_menu(void) {
+    title_face_set_transition("MEMRY", "ME", MOVEMENT_MEMORY_FACE_INDEX);
+    movement_move_to_face(MOVEMENT_MEMORY_TITLE_FACE_INDEX);
+}
+
+void movement_close_memory_menu(void) {
+    movement_move_to_face(MOVEMENT_MEMORY_LAUNCHER_FACE_INDEX);
+}
+
 void movement_move_to_next_face(void) {
+    uint16_t face_min;
     uint16_t face_max;
-    if (MOVEMENT_SECONDARY_FACE_INDEX) {
-        face_max = (movement_state.current_face_idx < (int16_t)MOVEMENT_SECONDARY_FACE_INDEX) ? MOVEMENT_SECONDARY_FACE_INDEX : MOVEMENT_NUM_FACES;
+
+    if (movement_state.current_face_idx < (int16_t)MOVEMENT_ALARM_FACE_INDEX) {
+        face_min = 0;
+        face_max = MOVEMENT_CLOCK_TITLE_FACE_INDEX;
+    } else if (movement_state.current_face_idx < (int16_t)MOVEMENT_SETTINGS_FACE_INDEX) {
+        face_min = MOVEMENT_ALARM_FACE_INDEX;
+        face_max = MOVEMENT_ALARM_TITLE_FACE_INDEX;
+    } else if (movement_state.current_face_idx < (int16_t)MOVEMENT_MEMORY_FACE_INDEX) {
+        face_min = MOVEMENT_SETTINGS_FACE_INDEX;
+        face_max = MOVEMENT_SETTINGS_TITLE_FACE_INDEX;
     } else {
-        face_max = MOVEMENT_NUM_FACES;
+        movement_close_memory_menu();
+        return;
     }
-    movement_move_to_face((movement_state.current_face_idx + 1) % face_max);
+
+    uint16_t next_face = movement_state.current_face_idx + 1;
+    movement_move_to_face(next_face < face_max ? next_face : face_min);
 }
 
 void movement_schedule_background_task(watch_date_time_t date_time) {
@@ -829,6 +882,16 @@ void movement_set_backlight_dwell(uint8_t value) {
     movement_state.settings.bit.led_duration = value;
 }
 
+uint8_t movement_get_title_length(void) {
+    return movement_title_length;
+}
+
+void movement_set_title_length(uint8_t value) {
+    if (value < 1 || value > 4) value = MOVEMENT_DEFAULT_TITLE_LENGTH;
+    movement_title_length = value;
+    filesystem_write_file("title_length.u8", (char *)&movement_title_length, sizeof(movement_title_length));
+}
+
 void movement_store_settings(void) {
     movement_settings_t old_settings;
     filesystem_read_file("settings.u32", (char *)&old_settings, sizeof(movement_settings_t));
@@ -916,13 +979,13 @@ uint8_t movement_get_accelerometer_motion_threshold(void) {
 }
 
 bool movement_set_accelerometer_motion_threshold(uint8_t new_threshold) {
-    if (movement_state.has_lis2dw) {
+    if (movement_state.has_lis2dw && new_threshold > 0 && new_threshold < 64) {
         if (movement_state.accelerometer_motion_threshold != new_threshold) {
             lis2dw_configure_wakeup_threshold(new_threshold);
             movement_state.accelerometer_motion_threshold = new_threshold;
-
-            return true;
+            filesystem_write_file("motion_threshold.u8", (char *)&new_threshold, sizeof(new_threshold));
         }
+        return true;
     }
 
     return false;
@@ -975,6 +1038,7 @@ void app_init(void) {
 
     movement_volatile_state.enter_sleep_mode = false;
     movement_volatile_state.exit_sleep_mode = false;
+    movement_volatile_state.illuminate_after_sleep_wake = false;
     movement_volatile_state.has_pending_sequence = false;
     movement_volatile_state.has_pending_accelerometer = false;
     movement_volatile_state.is_sleeping = false;
@@ -1047,6 +1111,14 @@ void app_init(void) {
         movement_store_settings();
     }
 
+    uint8_t saved_title_length;
+    if (filesystem_read_file("title_length.u8", (char *)&saved_title_length, sizeof(saved_title_length))
+        && saved_title_length >= 1 && saved_title_length <= 4) {
+        movement_title_length = saved_title_length;
+    } else {
+        movement_set_title_length(MOVEMENT_DEFAULT_TITLE_LENGTH);
+    }
+
     watch_date_time_t date_time = watch_rtc_get_date_time();
     if (date_time.reg == 0) {
         date_time = watch_get_init_date_time();
@@ -1062,7 +1134,18 @@ void app_init(void) {
     // populate the DST offset cache
     _movement_update_dst_offset_cache();
 
-    if (movement_state.accelerometer_motion_threshold == 0) movement_state.accelerometer_motion_threshold = 32;
+    uint8_t saved_motion_threshold;
+    if (filesystem_read_file("motion_threshold.u8", (char *)&saved_motion_threshold, sizeof(saved_motion_threshold))
+        && saved_motion_threshold > 0 && saved_motion_threshold < 64) {
+        movement_state.accelerometer_motion_threshold = saved_motion_threshold;
+    } else {
+        movement_state.accelerometer_motion_threshold = MOVEMENT_DEFAULT_MOTION_THRESHOLD;
+        filesystem_write_file(
+            "motion_threshold.u8",
+            (char *)&movement_state.accelerometer_motion_threshold,
+            sizeof(movement_state.accelerometer_motion_threshold)
+        );
+    }
 
     movement_state.signal_volume = MOVEMENT_DEFAULT_SIGNAL_VOLUME;
     movement_state.alarm_volume = MOVEMENT_DEFAULT_ALARM_VOLUME;
@@ -1179,10 +1262,10 @@ void app_setup(void) {
         movement_request_tick_frequency(1);
 
         for(uint8_t i = 0; i < MOVEMENT_NUM_FACES; i++) {
-            watch_faces[i].setup(i, &watch_face_contexts[i]);
+            _movement_get_watch_face(i)->setup(i, &watch_face_contexts[i]);
         }
 
-        watch_faces[movement_state.current_face_idx].activate(watch_face_contexts[movement_state.current_face_idx]);
+        _movement_get_watch_face(movement_state.current_face_idx)->activate(watch_face_contexts[movement_state.current_face_idx]);
         movement_volatile_state.pending_events |=  1 << EVENT_ACTIVATE;
     }
 }
@@ -1210,7 +1293,7 @@ static void _sleep_mode_app_loop(void) {
         movement_event_t event;
         event.event_type = EVENT_LOW_ENERGY_UPDATE;
         event.subsecond = 0;
-        watch_faces[movement_state.current_face_idx].loop(event, watch_face_contexts[movement_state.current_face_idx]);
+        _movement_get_watch_face(movement_state.current_face_idx)->loop(event, watch_face_contexts[movement_state.current_face_idx]);
 
         // If any of the previous loops requested to wake up, do it!
         if (movement_volatile_state.exit_sleep_mode) {
@@ -1234,12 +1317,12 @@ static void _sleep_mode_app_loop(void) {
 #endif
 
 static bool _switch_face(void) {
-    const watch_face_t *wf = &watch_faces[movement_state.current_face_idx];
+    const watch_face_t *wf = _movement_get_watch_face(movement_state.current_face_idx);
 
     wf->resign(watch_face_contexts[movement_state.current_face_idx]);
     movement_state.current_face_idx = movement_state.next_face_idx;
     // we have just updated the face idx, so we must recache the watch face pointer.
-    wf = &watch_faces[movement_state.current_face_idx];
+    wf = _movement_get_watch_face(movement_state.current_face_idx);
     watch_clear_display();
     movement_request_tick_frequency(1);
 
@@ -1263,7 +1346,7 @@ static bool _switch_face(void) {
 }
 
 bool app_loop(void) {
-    const watch_face_t *wf = &watch_faces[movement_state.current_face_idx];
+    const watch_face_t *wf = _movement_get_watch_face(movement_state.current_face_idx);
 
     // default to being allowed to sleep by the face.
     bool can_sleep = true;
@@ -1361,6 +1444,14 @@ bool app_loop(void) {
         _movement_disable_inactivity_countdown();
 
         watch_register_extwake_callback(HAL_GPIO_BTN_ALARM_pin(), cb_alarm_btn_extwake, true);
+        // Light is a normal full-wake source from every low-energy face. Its
+        // callback requests the same wake path as Alarm and records only that
+        // the ordinary LED illumination should run after app_setup.
+        watch_register_async_interrupt_callback(
+            HAL_GPIO_BTN_LIGHT_pin(),
+            cb_light_btn_sleep_wake,
+            INTERRUPT_TRIGGER_RISING
+        );
 
         // _sleep_mode_app_loop takes over at this point and loops until exit_sleep_mode is set by the extwake handler,
         // or wake is requested using the movement_request_wake function.
@@ -1370,6 +1461,11 @@ bool app_loop(void) {
         // // this is a hack tho: waking from sleep mode, app_setup does get called, but it happens before we have reset our ticks.
         // // need to figure out if there's a better heuristic for determining how we woke up.
         app_setup();
+
+        if (movement_volatile_state.illuminate_after_sleep_wake) {
+            movement_volatile_state.illuminate_after_sleep_wake = false;
+            movement_illuminate_led();
+        }
 
         // If we woke up to play a note sequence, actually play the note sequence we were asked to play while in deep sleep.
         if (movement_volatile_state.has_pending_sequence) {
@@ -1539,6 +1635,11 @@ void cb_sleep_timeout_interrupt(void) {
 
 void cb_alarm_btn_extwake(void) {
     // wake up!
+    movement_request_wake();
+}
+
+void cb_light_btn_sleep_wake(void) {
+    movement_volatile_state.illuminate_after_sleep_wake = true;
     movement_request_wake();
 }
 

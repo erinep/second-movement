@@ -18,6 +18,9 @@
 .vs
 .vscode
 docs/
+!docs/
+docs/*
+!docs/CHIRPY_MOTION_PROTOCOL.md
 *.kicad_sch-bak
 *-backups/
 *.bak
@@ -27,3 +30,7 @@ fp-info-cache
 *.plan
 /.direnv
 /.emscripten_cache
+/PROJECT_NOTES.md
+/private/*
+!/private/README.md
+!/private/my_databank_entries.example.inc

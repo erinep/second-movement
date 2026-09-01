@@ -42,6 +42,8 @@
 #define CLOCK_FACE_LOW_BATTERY_VOLTAGE_THRESHOLD 2400
 #endif
 
+static void clock_display_clock(clock_state_t *state, watch_date_time_t current);
+
 static void clock_indicate(watch_indicator_t indicator, bool on) {
     if (on) {
         watch_set_indicator(indicator);
@@ -108,6 +110,24 @@ static void clock_check_battery_periodically(clock_state_t *state, watch_date_ti
 static void clock_toggle_time_signal(clock_state_t *state) {
     state->time_signal_enabled = !state->time_signal_enabled;
     clock_indicate_time_signal(state);
+}
+
+static void clock_toggle_12_24_hour_mode(clock_state_t *state) {
+    movement_clock_mode_t new_mode = movement_clock_mode_24h() == MOVEMENT_CLOCK_MODE_12H
+        ? MOVEMENT_CLOCK_MODE_24H
+        : MOVEMENT_CLOCK_MODE_12H;
+
+    movement_set_clock_mode_24h(new_mode);
+    movement_store_settings();
+
+    // Remove indicators belonging to the previous mode before redrawing.
+    watch_clear_indicator(WATCH_INDICATOR_PM);
+    clock_indicate_24h();
+    state->date_time.previous.reg = 0xFFFFFFFF;
+
+    watch_date_time_t current = movement_get_local_date_time();
+    clock_display_clock(state, current);
+    state->date_time.previous = current;
 }
 
 static void clock_display_all(watch_date_time_t date_time) {
@@ -253,6 +273,9 @@ bool clock_face_loop(movement_event_t event, void *context) {
 
             break;
         case EVENT_ALARM_LONG_PRESS:
+            clock_toggle_12_24_hour_mode(state);
+            break;
+        case EVENT_ALARM_BUTTON_UP:
             clock_toggle_time_signal(state);
             break;
         case EVENT_BACKGROUND_TASK:

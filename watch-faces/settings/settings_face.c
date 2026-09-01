@@ -26,20 +26,6 @@
 #include "settings_face.h"
 #include "watch.h"
 
-static void clock_setting_display(uint8_t subsecond) {
-    watch_display_text_with_fallback(WATCH_POSITION_TOP, "CLOCK", "CL");
-    if (subsecond % 2) {
-        if (movement_clock_mode_24h()) watch_display_text(WATCH_POSITION_BOTTOM, "24h");
-        else watch_display_text(WATCH_POSITION_BOTTOM, "12h");
-    } else {
-        watch_display_text(WATCH_POSITION_BOTTOM, "      ");
-    }
-}
-
-static void clock_setting_advance(void) {
-    movement_set_clock_mode_24h(((movement_clock_mode_24h() + 1) % MOVEMENT_NUM_CLOCK_MODES));
-}
-
 static void beep_setting_display(uint8_t subsecond) {
     watch_display_text_with_fallback(WATCH_POSITION_TOP_LEFT, "BTN", "BT");
     watch_display_text_with_fallback(WATCH_POSITION_BOTTOM, "beep  ", " beep ");
@@ -167,6 +153,51 @@ static void timeout_setting_display(uint8_t subsecond) {
 
 static void timeout_setting_advance(void) {
     movement_set_fast_tick_timeout((movement_get_fast_tick_timeout() + 1));
+}
+
+static void title_length_setting_display(uint8_t subsecond) {
+    watch_display_text_with_fallback(WATCH_POSITION_TOP, "TITLE", "TT");
+    if (subsecond % 2) {
+        switch (movement_get_title_length()) {
+            case 1: watch_display_text(WATCH_POSITION_BOTTOM, " 0.5 S"); break;
+            case 2: watch_display_text(WATCH_POSITION_BOTTOM, " 1 SeC"); break;
+            case 3: watch_display_text(WATCH_POSITION_BOTTOM, " 1.5 S"); break;
+            default: watch_display_text(WATCH_POSITION_BOTTOM, " 2 SeC"); break;
+        }
+    } else {
+        watch_display_text(WATCH_POSITION_BOTTOM, "      ");
+    }
+}
+
+static void title_length_setting_advance(void) {
+    movement_set_title_length((movement_get_title_length() % 4) + 1);
+}
+
+static const uint8_t motion_thresholds[] = {4, 8, 16, 24, 32, 48};
+
+static void motion_threshold_setting_display(uint8_t subsecond) {
+    watch_display_text_with_fallback(WATCH_POSITION_TOP, "THRSH", "TH");
+    if (subsecond % 2) {
+        uint8_t threshold = movement_get_accelerometer_motion_threshold();
+        if (threshold) watch_display_float_with_best_effort(threshold * 0.03125, " G");
+        else watch_display_text(WATCH_POSITION_BOTTOM, "no ACC");
+    } else {
+        watch_display_text(WATCH_POSITION_BOTTOM, "      ");
+    }
+}
+
+static void motion_threshold_setting_advance(void) {
+    uint8_t current = movement_get_accelerometer_motion_threshold();
+    uint8_t next = motion_thresholds[0];
+    uint8_t count = sizeof(motion_thresholds) / sizeof(motion_thresholds[0]);
+
+    for (uint8_t i = 0; i < count; i++) {
+        if (current == motion_thresholds[i]) {
+            next = motion_thresholds[(i + 1) % count];
+            break;
+        }
+    }
+    movement_set_accelerometer_motion_threshold(next);
 }
 
 static void low_energy_setting_display(uint8_t subsecond) {
@@ -313,7 +344,7 @@ void settings_face_setup(uint8_t watch_face_index, void ** context_ptr) {
         settings_state_t *state = (settings_state_t *)*context_ptr;
         int8_t current_setting = 0;
 
-        state->num_settings = 6; // baseline, without LED settings
+        state->num_settings = 7; // baseline, without LED color settings
 #ifndef MOVEMENT_LOW_ENERGY_MODE_FORBIDDEN
         state->num_settings++;
 #endif
@@ -331,9 +362,6 @@ void settings_face_setup(uint8_t watch_face_index, void ** context_ptr) {
 #endif
 
         state->settings_screens = malloc(state->num_settings * sizeof(settings_screen_t));
-        state->settings_screens[current_setting].display = clock_setting_display;
-        state->settings_screens[current_setting].advance = clock_setting_advance;
-        current_setting++;
         state->settings_screens[current_setting].display = beep_setting_display;
         state->settings_screens[current_setting].advance = beep_setting_advance;
         current_setting++;
@@ -345,6 +373,12 @@ void settings_face_setup(uint8_t watch_face_index, void ** context_ptr) {
         current_setting++;
         state->settings_screens[current_setting].display = timeout_setting_display;
         state->settings_screens[current_setting].advance = timeout_setting_advance;
+        current_setting++;
+        state->settings_screens[current_setting].display = title_length_setting_display;
+        state->settings_screens[current_setting].advance = title_length_setting_advance;
+        current_setting++;
+        state->settings_screens[current_setting].display = motion_threshold_setting_display;
+        state->settings_screens[current_setting].advance = motion_threshold_setting_advance;
         current_setting++;
 #ifndef MOVEMENT_LOW_ENERGY_MODE_FORBIDDEN
         state->settings_screens[current_setting].display = low_energy_setting_display;

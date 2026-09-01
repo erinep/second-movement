@@ -30,8 +30,11 @@
 #include <emscripten.h>
 #include <emscripten/html5.h>
 
+void _wake_up_simulator(void);
+
 static bool debug_console_focused = false;
 static bool external_interrupt_enabled = false;
+static bool light_interrupt_async = false;
 static bool button_callbacks_installed = false;
 static watch_cb_t external_interrupt_mode_callback = NULL;
 static eic_interrupt_trigger_t external_interrupt_mode_trigger = INTERRUPT_TRIGGER_NONE;
@@ -181,12 +184,13 @@ static EM_BOOL watch_invoke_interrupt_callback(const uint8_t button_id, eic_inte
         $1 ? classList.add(highlight) : classList.remove(highlight);
     }, button_id, level);
 
-    if (!external_interrupt_enabled || main_loop_is_sleeping()) {
+    if (!external_interrupt_enabled || (main_loop_is_sleeping() && !(button_id == BTN_ID_LIGHT && light_interrupt_async))) {
         return EM_FALSE;
     }
 
     if (callback && (event & trigger) != 0) {
         callback();
+        if (button_id == BTN_ID_LIGHT && light_interrupt_async) _wake_up_simulator();
         resume_main_loop();
     }
 
@@ -198,10 +202,19 @@ void watch_register_interrupt_callback(const uint8_t pin, watch_cb_t callback, e
         external_interrupt_mode_callback = callback;
         external_interrupt_mode_trigger = trigger;
     } else if (pin == HAL_GPIO_BTN_LIGHT_pin()) {
+        light_interrupt_async = false;
         external_interrupt_light_callback = callback;
         external_interrupt_light_trigger = trigger;
     } else if (pin == HAL_GPIO_BTN_ALARM_pin()) {
         external_interrupt_alarm_callback = callback;
         external_interrupt_alarm_trigger = trigger;
     }
+}
+
+bool watch_register_async_interrupt_callback(const uint8_t pin, watch_cb_t callback, eic_interrupt_trigger_t trigger) {
+    if (pin != HAL_GPIO_BTN_LIGHT_pin()) return false;
+    watch_enable_external_interrupts();
+    watch_register_interrupt_callback(pin, callback, trigger);
+    light_interrupt_async = true;
+    return true;
 }

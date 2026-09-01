@@ -60,6 +60,28 @@ void watch_register_interrupt_callback(const uint8_t pin, watch_cb_t callback, e
     }
 }
 
+bool watch_register_async_interrupt_callback(const uint8_t pin, watch_cb_t callback, eic_interrupt_trigger_t trigger) {
+    if (pin != HAL_GPIO_BTN_LIGHT_pin()) return false;
+
+    watch_enable_digital_input(pin);
+    if (pin == HAL_GPIO_BTN_LIGHT_pin() || pin == HAL_GPIO_BTN_MODE_pin() || pin == HAL_GPIO_BTN_ALARM_pin()) {
+        watch_enable_pull_down(pin);
+    }
+
+    int8_t channel = eic_configure_pin(pin, trigger, false);
+    if (channel < 0 || channel >= 16) return false;
+
+    eic_callbacks[channel] = callback;
+    if (!eic_enable_interrupt(pin)) return false;
+
+    EIC->CTRLA.bit.ENABLE = 0;
+    while (EIC->SYNCBUSY.reg);
+    EIC->ASYNCH.reg |= 1 << channel;
+    EIC->CTRLA.bit.ENABLE = 1;
+    while (EIC->SYNCBUSY.reg);
+    return true;
+}
+
 void watch_eic_callback(uint8_t channel) {
     if (eic_callbacks[channel] != NULL) {
         eic_callbacks[channel]();

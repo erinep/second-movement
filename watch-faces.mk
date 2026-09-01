@@ -7,9 +7,14 @@ SRCS += \
   ./watch-faces/complication/alarm_face.c \
   ./watch-faces/complication/advanced_alarm_face.c \
   ./watch-faces/complication/countdown_face.c \
+  ./watch-faces/complication/my_countdown_face.c \
+  ./watch-faces/complication/my_databank_face.c \
   ./watch-faces/complication/stopwatch_face.c \
   ./watch-faces/complication/fast_stopwatch_face.c \
+  ./watch-faces/complication/my_stopwatch_face.c \
   ./watch-faces/complication/sunrise_sunset_face.c \
+  ./watch-faces/complication/my_location.c \
+  ./watch-faces/complication/my_sunrise_face.c \
   ./watch-faces/complication/moon_phase_face.c \
   ./watch-faces/complication/days_since_face.c \
   ./watch-faces/complication/breathing_face.c \
@@ -27,9 +32,15 @@ SRCS += \
   ./watch-faces/sensor/temperature_display_face.c \
   ./watch-faces/sensor/temperature_logging_face.c \
   ./watch-faces/sensor/activity_logging_face.c \
+  ./watch-faces/sensor/time_since_motion_face.c \
   ./watch-faces/sensor/voltage_face.c \
   ./watch-faces/settings/set_time_face.c \
+  ./watch-faces/settings/set_timezone_face.c \
+  ./watch-faces/settings/set_date_face.c \
+  ./watch-faces/settings/set_location_face.c \
   ./watch-faces/settings/settings_face.c \
+  ./watch-faces/settings/title_face.c \
+  ./watch-faces/settings/memory_launcher_face.c \
   ./watch-faces/settings/finetune_face.c \
   ./watch-faces/settings/nanosec_face.c \
   ./watch-faces/io/chirpy_demo_face.c \

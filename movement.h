@@ -307,6 +307,8 @@ typedef struct {
 
 void movement_move_to_face(uint8_t watch_face_index);
 void movement_move_to_next_face(void);
+void movement_open_memory_menu(void);
+void movement_close_memory_menu(void);
 
 bool movement_default_loop_handler(movement_event_t event);
 
@@ -385,6 +387,9 @@ void movement_set_backlight_color(movement_color_t color);
 
 uint8_t movement_get_backlight_dwell(void);
 void movement_set_backlight_dwell(uint8_t value);
+
+uint8_t movement_get_title_length(void);
+void movement_set_title_length(uint8_t value);
 
 void movement_store_settings(void);
 

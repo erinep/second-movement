@@ -67,4 +67,10 @@ void watch_disable_external_interrupts(void);
   */
 void watch_register_interrupt_callback(const uint8_t pin, watch_cb_t callback, eic_interrupt_trigger_t trigger);
 
+/** @brief Configures the Light button as a clockless interrupt that can wake STANDBY.
+  * @details Unlike the regular filtered button interrupts, this interrupt uses
+  *          asynchronous edge detection so the EIC clock can remain off.
+  */
+bool watch_register_async_interrupt_callback(const uint8_t pin, watch_cb_t callback, eic_interrupt_trigger_t trigger);
+
 /// @}
