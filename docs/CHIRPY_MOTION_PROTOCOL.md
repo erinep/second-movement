@@ -5,7 +5,7 @@ separate Android receiver repository at `../sensor-watch-motion-rx`. Full app
 architecture, UI, storage, tests, and delivery milestones live in that
 repository's `DESIGN.md`.
 
-Status: proposed, not implemented.
+Status: implemented in `time_since_motion_face`.
 
 ## Watch behavior
 
