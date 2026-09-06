@@ -4,11 +4,23 @@
 #include <string.h>
 
 #include "time_since_motion_face.h"
+#include "chirpy_tx.h"
 #include "watch_utility.h"
 
 #define HISTORY_MINUTES 1440
 #define HISTORY_BYTES ((HISTORY_MINUTES + 7) / 8)
-#define REPORT_PAGES 6
+#define REPORT_PAGES 7
+#define MOTION_PACKET_HEADER_SIZE 28
+#define MOTION_PACKET_SIZE 212
+#define MOTION_PACKET_CRC_OFFSET 208
+#define MOTION_PACKET_FLAGS 0x03
+#define MOTION_PACKET_VERSION 1
+#define MOTION_SAMPLE_PERIOD_SECONDS 60
+#define TRANSMISSION_DONE_SECONDS 2
+
+_Static_assert(HISTORY_BYTES == 180, "motion history must occupy 180 bytes");
+_Static_assert(MOTION_PACKET_HEADER_SIZE + HISTORY_BYTES + 4 == MOTION_PACKET_SIZE,
+               "SWMR packet layout must total 212 bytes");
 
 typedef enum {
     REPORT_LIVE,
@@ -17,6 +29,7 @@ typedef enum {
     REPORT_END,
     REPORT_STILL,
     REPORT_WAKE,
+    REPORT_SEND,
 } report_page_t;
 
 typedef struct {
@@ -37,8 +50,39 @@ typedef struct {
     uint16_t sample_count;
     uint8_t report_page;
     bool accelerometer_available;
+    bool transmitting;
+    bool cancelling_transmission;
+    uint32_t done_until;
+    uint16_t packet_index;
+    uint8_t packet[MOTION_PACKET_SIZE];
+    chirpy_encoder_state_t encoder_state;
     motion_report_t report;
 } time_since_motion_state_t;
+
+static time_since_motion_state_t *transmitting_state;
+
+static void _write_u16_le(uint8_t *destination, uint16_t value) {
+    destination[0] = value & 0xFF;
+    destination[1] = value >> 8;
+}
+
+static void _write_u32_le(uint8_t *destination, uint32_t value) {
+    destination[0] = value & 0xFF;
+    destination[1] = (value >> 8) & 0xFF;
+    destination[2] = (value >> 16) & 0xFF;
+    destination[3] = value >> 24;
+}
+
+static uint32_t _crc32(const uint8_t *data, uint16_t length) {
+    uint32_t crc = 0xFFFFFFFF;
+    for (uint16_t i = 0; i < length; i++) {
+        crc ^= data[i];
+        for (uint8_t bit = 0; bit < 8; bit++) {
+            crc = (crc >> 1) ^ (0xEDB88320 & (0 - (crc & 1)));
+        }
+    }
+    return crc ^ 0xFFFFFFFF;
+}
 
 static bool _sensor_is_active(void) {
     return !HAL_GPIO_A4_read();
@@ -90,6 +134,92 @@ static bool _history_is_active(const time_since_motion_state_t *state, uint16_t 
     uint16_t oldest = state->sample_count < HISTORY_MINUTES ? 0 : state->write_index;
     uint16_t index = (oldest + offset) % HISTORY_MINUTES;
     return state->history[index >> 3] & (1 << (index & 7));
+}
+
+static void _build_motion_packet(time_since_motion_state_t *state) {
+    const uint16_t sample_count = state->sample_count;
+    const uint16_t write_index = state->write_index;
+    const uint32_t last_sample_minute = state->last_sample_minute;
+    const uint32_t generated_timestamp = movement_get_utc_timestamp();
+
+    memset(state->packet, 0, sizeof(state->packet));
+    memcpy(state->packet, "SWMR", 4);
+    state->packet[4] = MOTION_PACKET_VERSION;
+    state->packet[5] = MOTION_PACKET_FLAGS;
+    _write_u16_le(&state->packet[6], MOTION_PACKET_HEADER_SIZE);
+    _write_u16_le(&state->packet[8], MOTION_PACKET_SIZE);
+    _write_u16_le(&state->packet[10], MOTION_SAMPLE_PERIOD_SECONDS);
+    _write_u16_le(&state->packet[12], sample_count);
+    if (sample_count) {
+        _write_u32_le(&state->packet[14],
+                      (last_sample_minute - sample_count + 1) * 60);
+    }
+    _write_u32_le(&state->packet[18], generated_timestamp);
+    state->packet[22] = TIME_SINCE_MOTION_REST_WINDOW_MINUTES;
+    state->packet[23] = TIME_SINCE_MOTION_REST_PERCENT;
+    state->packet[24] = TIME_SINCE_MOTION_REST_GAP_MINUTES;
+    state->packet[25] = TIME_SINCE_MOTION_WAKE_MINUTES;
+    _write_u16_le(&state->packet[26], TIME_SINCE_MOTION_MIN_REST_MINUTES);
+
+    const uint16_t oldest = sample_count < HISTORY_MINUTES ? 0 : write_index;
+    for (uint16_t i = 0; i < sample_count; i++) {
+        uint16_t source = (oldest + i) % HISTORY_MINUTES;
+        if (state->history[source >> 3] & (1 << (source & 7))) {
+            state->packet[MOTION_PACKET_HEADER_SIZE + (i >> 3)] |= 1 << (i & 7);
+        }
+    }
+
+    _write_u32_le(&state->packet[MOTION_PACKET_CRC_OFFSET],
+                  _crc32(state->packet, MOTION_PACKET_CRC_OFFSET));
+}
+
+static uint8_t _get_next_packet_byte(uint8_t *next_byte) {
+    if (!transmitting_state ||
+        transmitting_state->packet_index >= MOTION_PACKET_SIZE) return 0;
+    *next_byte = transmitting_state->packet[transmitting_state->packet_index++];
+    return 1;
+}
+
+static void _on_transmission_done(void) {
+    if (transmitting_state) {
+        transmitting_state->transmitting = false;
+        transmitting_state->done_until = transmitting_state->cancelling_transmission ? 0 :
+            movement_get_utc_timestamp() + TRANSMISSION_DONE_SECONDS;
+        transmitting_state->cancelling_transmission = false;
+    }
+    transmitting_state = NULL;
+    watch_clear_indicator(WATCH_INDICATOR_BELL);
+}
+
+static bool _chirpy_raw_source(uint16_t position, void *context,
+                               uint16_t *period, uint16_t *duration) {
+    if (position < 6) {
+        *period = position % 2 ? WATCH_BUZZER_PERIOD_REST :
+                                NotePeriods[BUZZER_NOTE_A5];
+        *duration = position % 2 ? 56 : 8;
+        return false;
+    }
+
+    time_since_motion_state_t *state = context;
+    uint8_t tone = chirpy_get_next_tone(&state->encoder_state);
+    if (tone == 255) return true;
+    *period = chirpy_get_tone_period(tone);
+    *duration = 3;
+    return false;
+}
+
+static void _start_transmission(time_since_motion_state_t *state) {
+    _sample_motion(state);
+    _build_motion_packet(state);
+    state->packet_index = 0;
+    state->done_until = 0;
+    state->transmitting = true;
+    state->cancelling_transmission = false;
+    transmitting_state = state;
+    chirpy_init_encoder(&state->encoder_state, _get_next_packet_byte);
+    watch_set_indicator(WATCH_INDICATOR_BELL);
+    watch_buzzer_play_raw_source(_chirpy_raw_source, state,
+                                 _on_transmission_done);
 }
 
 static uint8_t _coverage_hours(const time_since_motion_state_t *state);
@@ -224,6 +354,21 @@ static void _draw(time_since_motion_state_t *state) {
     char buf[10];
     watch_clear_colon();
 
+    if (state->report_page == REPORT_SEND) {
+        watch_display_text_with_fallback(WATCH_POSITION_TOP,
+                                         state->transmitting ? "CHIRP" : "SEND ",
+                                         state->transmitting ? "CH" : "SE");
+        if (state->transmitting) {
+            watch_display_text(WATCH_POSITION_BOTTOM, "------");
+        } else if (state->done_until > movement_get_utc_timestamp()) {
+            watch_display_text(WATCH_POSITION_BOTTOM, " DONE ");
+        } else {
+            state->done_until = 0;
+            watch_display_text(WATCH_POSITION_BOTTOM, " HOLD ");
+        }
+        return;
+    }
+
     if (!state->accelerometer_available) {
         watch_display_text_with_fallback(WATCH_POSITION_TOP, "INACT", "IA");
         watch_display_text(WATCH_POSITION_BOTTOM, "no ACC");
@@ -302,6 +447,12 @@ bool time_since_motion_face_loop(movement_event_t event, void *context) {
             _draw(state);
             break;
         case EVENT_ALARM_BUTTON_UP:
+            if (state->transmitting) {
+                state->cancelling_transmission = true;
+                watch_buzzer_abort_sequence();
+                _draw(state);
+                break;
+            }
             state->report_page = (state->report_page + 1) % REPORT_PAGES;
             if (state->report_page == REPORT_REST) {
                 _sample_motion(state);
@@ -310,14 +461,24 @@ bool time_since_motion_face_loop(movement_event_t event, void *context) {
             _draw(state);
             break;
         case EVENT_ALARM_LONG_PRESS:
-            state->report_page = REPORT_LIVE;
+            if (state->transmitting) {
+                state->cancelling_transmission = true;
+                watch_buzzer_abort_sequence();
+                _draw(state);
+                break;
+            }
+            if (state->report_page == REPORT_SEND) {
+                _start_transmission(state);
+            } else {
+                state->report_page = REPORT_LIVE;
+            }
             _draw(state);
             break;
         case EVENT_LOW_ENERGY_UPDATE:
             _draw(state);
             break;
         case EVENT_TIMEOUT:
-            movement_move_to_face(0);
+            if (!state->transmitting) movement_move_to_face(0);
             break;
         default:
             movement_default_loop_handler(event);
@@ -327,7 +488,16 @@ bool time_since_motion_face_loop(movement_event_t event, void *context) {
 }
 
 void time_since_motion_face_resign(void *context) {
-    (void)context;
+    time_since_motion_state_t *state = context;
+    if (state->transmitting) {
+        state->cancelling_transmission = true;
+        watch_buzzer_abort_sequence();
+    }
+    state->transmitting = false;
+    state->cancelling_transmission = false;
+    state->done_until = 0;
+    if (transmitting_state == state) transmitting_state = NULL;
+    watch_clear_indicator(WATCH_INDICATOR_BELL);
 }
 
 movement_watch_face_advisory_t time_since_motion_face_advise(void *context) {

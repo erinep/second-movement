@@ -140,10 +140,11 @@ static void _watch_disable_all_pins_except_rtc(void) {
 
     // Always keep PA02 configured as-is; that's our ALARM button.
     porta_pins_to_disable &= ~(1 << 2);
-    // Also preserve an asynchronously configured Light button.
-    if (EIC->ASYNCH.reg) {
+    // Preserve buttons configured as clockless asynchronous wake sources.
+    if (EIC->ASYNCH.reg)
         porta_pins_to_disable &= ~(1 << (HAL_GPIO_BTN_LIGHT_pin() & 0x1F));
-    }
+    if (EIC->ASYNCH.reg)
+        porta_pins_to_disable &= ~(1 << (HAL_GPIO_BTN_MODE_pin() & 0x1F));
 
     PORT->Group[0].DIRCLR.reg = porta_pins_to_disable;
     // WRCONFIG can only set half the pins at a time, so we need two writes. This sets pins 0-15.

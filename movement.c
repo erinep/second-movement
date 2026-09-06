@@ -148,6 +148,7 @@ void cb_light_btn_interrupt(void);
 void cb_alarm_btn_interrupt(void);
 void cb_alarm_btn_extwake(void);
 void cb_light_btn_sleep_wake(void);
+void cb_button_sleep_wake(void);
 void cb_minute_alarm_fired(void);
 void cb_tick(void);
 void cb_mode_btn_timeout_interrupt(void);
@@ -1316,7 +1317,7 @@ static void _sleep_mode_app_loop(void) {
 
 #endif
 
-static bool _switch_face(void) {
+static bool _switch_face(bool play_sound) {
     const watch_face_t *wf = _movement_get_watch_face(movement_state.current_face_idx);
 
     wf->resign(watch_face_contexts[movement_state.current_face_idx]);
@@ -1326,7 +1327,7 @@ static bool _switch_face(void) {
     watch_clear_display();
     movement_request_tick_frequency(1);
 
-    if (movement_state.settings.bit.button_should_sound) {
+    if (play_sound && movement_state.settings.bit.button_should_sound) {
         // low note for nonzero case, high note for return to watch_face 0
         movement_play_note(movement_state.next_face_idx ? BUZZER_NOTE_C7 : BUZZER_NOTE_C8, 50);
     }
@@ -1431,13 +1432,20 @@ bool app_loop(void) {
 
     // The watch_face_changed flag might be set again by the face loop, so check it again
     if (movement_state.watch_face_changed) {
-        can_sleep = _switch_face() && can_sleep;
+        can_sleep = _switch_face(true) && can_sleep;
     }
 
 #ifndef MOVEMENT_LOW_ENERGY_MODE_FORBIDDEN
     // if we have timed out of our low energy mode countdown, enter low energy mode.
     if (movement_volatile_state.enter_sleep_mode && !movement_volatile_state.is_buzzing) {
         movement_volatile_state.enter_sleep_mode = false;
+
+        // Always show and update the primary clock face while in low-energy mode.
+        if (movement_state.current_face_idx != 0) {
+            movement_state.next_face_idx = 0;
+            can_sleep = _switch_face(false) && can_sleep;
+        }
+
         movement_volatile_state.is_sleeping = true;
 
         // No need to fire resign and sleep interrupts while in sleep mode
@@ -1450,6 +1458,11 @@ bool app_loop(void) {
         watch_register_async_interrupt_callback(
             HAL_GPIO_BTN_LIGHT_pin(),
             cb_light_btn_sleep_wake,
+            INTERRUPT_TRIGGER_RISING
+        );
+        watch_register_async_interrupt_callback(
+            HAL_GPIO_BTN_MODE_pin(),
+            cb_button_sleep_wake,
             INTERRUPT_TRIGGER_RISING
         );
 
@@ -1640,6 +1653,10 @@ void cb_alarm_btn_extwake(void) {
 
 void cb_light_btn_sleep_wake(void) {
     movement_volatile_state.illuminate_after_sleep_wake = true;
+    movement_request_wake();
+}
+
+void cb_button_sleep_wake(void) {
     movement_request_wake();
 }
 

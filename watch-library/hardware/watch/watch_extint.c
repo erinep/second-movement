@@ -61,7 +61,7 @@ void watch_register_interrupt_callback(const uint8_t pin, watch_cb_t callback, e
 }
 
 bool watch_register_async_interrupt_callback(const uint8_t pin, watch_cb_t callback, eic_interrupt_trigger_t trigger) {
-    if (pin != HAL_GPIO_BTN_LIGHT_pin()) return false;
+    if (pin != HAL_GPIO_BTN_LIGHT_pin() && pin != HAL_GPIO_BTN_MODE_pin()) return false;
 
     watch_enable_digital_input(pin);
     if (pin == HAL_GPIO_BTN_LIGHT_pin() || pin == HAL_GPIO_BTN_MODE_pin() || pin == HAL_GPIO_BTN_ALARM_pin()) {
